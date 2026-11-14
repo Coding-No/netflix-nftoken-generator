@@ -1,0 +1,18 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+out/
+
+# runtime state & hasil (JANGAN commit data cookie!)
+last_run.json
+*.zip
+*.cookie
+*.txt
+!requirements.txt
+nftokens*
+
+# os
+.DS_Store
+Thumbs.db
