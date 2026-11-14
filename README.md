@@ -30,11 +30,15 @@ Buka link itu di browser → **langsung login** tanpa password.
 
 - ✅ **Alur 2 tahap otomatis**: cek valid → kalau hidup langsung generate token
 - ✅ **Tampil durasi**: per akun (waktu cek & generate) + total proses
+- ✅ **3 link per akun** (1 token): 🖥️ Desktop `/browse`, 📱 HP `/unsupported`, 📺 Smart TV `/tv8`
+- ✅ **QR Code** (PNG, tinggal scan dari HP)
+- ✅ **Panduan penggunaan** otomatis (Desktop / HP / TV)
+- ✅ **TV Code** — tukar kode 8-digit dari Smart TV jadi login
 - ✅ **Bulk** — tempel/upload banyak akun sekaligus, jalan paralel (workers)
 - ✅ **Auto-detect** hidup/mati + alasan mati
 - ✅ **Dukung format**: Netscape (tab-separated), raw (`NetflixId=...; SecureNetflixId=...`), JSON
 - ✅ **Upload** `.txt` / `.json` / `.zip` → diproses otomatis
-- ✅ **Export**: ZIP (1 file per akun + all_links.txt + links.tsv), TXT, CSV, JSON
+- ✅ **Export**: ZIP (1 file per akun: 3 link + QR.png + panduan + all_links.txt + links.tsv), TXT, CSV, JSON
 - ✅ **Web UI** (paste/upload) + **CLI** + **HTTP API**
 - ✅ **Proxy** opsional + timeout & concurrency yang bisa diatur
 
