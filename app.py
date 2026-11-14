@@ -155,6 +155,25 @@ def api_last():
     return _read_last()
 
 
+@app.get("/api/tvcode")
+def api_tvcode(token: str = "", code: str = ""):
+    """Tukar kode 8-digit dari TV jadi login. Butuh token nftoken + kode TV."""
+    if not token or not code:
+        return JSONResponse({"ok": False, "error": "butuh token & code (8 digit)"}, status_code=400)
+    if not (code.strip().isdigit() and len(code.strip()) == 8):
+        return JSONResponse({"ok": False, "error": "kode TV harus 8 digit angka"}, status_code=400)
+    try:
+        r = requests.post(
+            "https://www.netflix.com/api/shakti/v8/tvlink/generate",
+            data={"token": token, "code": code.strip()},
+            headers={"User-Agent": "Mozilla/5.0", "Origin": "https://www.netflix.com"},
+            timeout=25,
+        )
+        return JSONResponse({"ok": r.ok, "status": r.status_code, "body": r.text[:500]})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 @app.get("/export")
 def export(fmt: str = "json", only: str = "ALL"):
     d = _read_last()
@@ -197,25 +216,45 @@ def export_zip(only: str = "ALIVE"):
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("_readme.txt",
                    "Netflix NFToken — hasil generate\n\n"
-                   "Tiap file .txt isi 1 link login nftoken.\n"
-                   "Buka link di browser (sudah login otomatis).\n"
+                   "Tiap file .txt isi 3 link login (Desktop / HP / Smart TV) + panduan.\n"
+                   "Tiap file .qr.png = QR code buat scan di HP.\n"
                    "File all_links.txt = semua link, 1 per baris.\n"
-                   "File links.tsv = label<TAB>link (buat spreadsheet).\n")
+                   "File links.tsv = label<TAB>link (buat spreadsheet).\n\n"
+                   "CARA PAKAI (ringkas):\n"
+                   "  1. Desktop  -> buka link bagian DESKTOP di browser\n"
+                   "  2. HP       -> buka link bagian HP di Chrome/Safari (incognito kalau diminta login)\n"
+                   "  3. Smart TV -> buka aplikasi Netflix di TV, pilih Sign in from browser,\n"
+                   "                 lalu buka link bagian TV dan masukkan kode 8 digit.\n"
+                   "  4. QR       -> scan file .qr.png pakai kamera HP -> langsung masuk.\n\n"
+                   "PENTING: link 1x pakai & berlaku sementara. Jangan logout (bikin cookie mati).\n")
         all_links = []
         for i, r in enumerate(rows, 1):
             if not (r.get("ok") and r.get("link")):
                 continue
             label = (r.get("label") or f"item{i}").replace("/", "_")[:60]
             dur = r.get("validity_str") or (f"{r.get('validity_days')} hari" if r.get("validity_days") is not None else "-")
-            body = (f"LINK LOGIN NETFLIX (nftoken)\n"
-                    f"===========================\n"
-                    f"{r['link']}\n\n"
-                    f"Berlaku sampai : {r.get('expires_str') or '-'}\n"
-                    f"Durasi         : {dur}\n"
-                    f"Valid?         : {'YA' if r.get('alive') else 'TIDAK'}\n"
-                    f"Waktu cek      : {r.get('check_elapsed', '-')}s\n"
-                    f"Waktu generate : {r.get('gen_elapsed', '-')}s\n")
+            L = r.get("links") or {}
+            guide = r.get("guide") or ""
+            body = (f"🍿 LINK LOGIN NETFLIX BERHASIL DIBUAT\n"
+                    f"{'='*40}\n\n"
+                    f"⏰ Token berlaku sampai : {r.get('expires_str') or '-'}\n"
+                    f"⏱️ Sisa waktu           : {dur}\n"
+                    f"✅ Valid?               : {'YA' if r.get('alive') else 'TIDAK'}\n"
+                    f"⚡ Waktu cek            : {r.get('check_elapsed', '-')}s\n"
+                    f"⚡ Waktu generate token : {r.get('gen_elapsed', '-')}s\n\n"
+                    f"🖥️ DESKTOP / BROWSER:\n{L.get('desktop', r.get('link',''))}\n\n"
+                    f"📱 HP / APLIKASI NETFLIX:\n{L.get('mobile','-')}\n\n"
+                    f"📺 SMART TV:\n{L.get('tv','-')}\n\n"
+                    f"{guide}\n")
             z.writestr(f"{i:03d}_{label}.txt", body)
+            # QR code (PNG) untuk akun ini
+            if r.get("qr"):
+                try:
+                    import base64
+                    b64 = r["qr"].split(",", 1)[1]
+                    z.writestr(f"{i:03d}_{label}.qr.png", base64.b64decode(b64))
+                except Exception:
+                    pass
             all_links.append(r["link"])
         z.writestr("all_links.txt", "\n".join(all_links) + ("\n" if all_links else ""))
         tsv = "\n".join(f'{r.get("label","")}\t{r["link"]}' for r in rows if r.get("ok") and r.get("link"))
@@ -258,6 +297,17 @@ th{color:var(--mut);font-weight:600;position:sticky;top:0;background:var(--card)
 .stat.bad{color:var(--bad);background:none;border:0;padding:0}
 .mono{font-family:ui-monospace,monospace}
 details summary{cursor:pointer;color:var(--mut)}
+.detailrow td{background:#0d1117;border-top:1px dashed #30363d}
+.detailbox{padding:12px;border-radius:10px}
+.dhead{font-size:16px;font-weight:700;margin-bottom:4px}
+.dsub{color:#8b949e;margin-bottom:10px}
+.dgrid{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:10px}
+.dcol{border:1px solid #30363d;border-radius:8px;padding:8px;overflow-wrap:anywhere}
+.dlink a{color:#58a6ff;font-size:12px}
+.qrbox{text-align:center;margin:10px 0}
+.qrbox img{width:180px;height:180px;background:#fff;padding:6px;border-radius:8px}
+.guide{white-space:pre-wrap;font-size:12px;background:#010409;padding:10px;border-radius:8px;color:#c9d1d9;max-height:320px;overflow:auto}
+@media(min-width:760px){.dgrid{grid-template-columns:1fr 1fr 1fr}}
 #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:#1f2733;border:1px solid var(--bd);padding:10px 16px;border-radius:10px;display:none;z-index:99}
 </style></head><body>
 <header>🎬 Netflix NFToken Generator</header>
@@ -366,9 +416,10 @@ function render(d){
     else if(r.validity_days!==undefined && r.validity_days!==null){dur='<b>'+r.validity_days+' hari</b>';}
     let t2;
     if(r.token&&r.link){
-      t2='<a class="link" href="'+r.link+'" target="_blank">'+r.link.slice(0,70)+'…</a> '
+      t2='<a class="link" href="'+r.link+'" target="_blank">'+r.link.slice(0,60)+'…</a> '
        +'<button class="mini alt" data-c="'+encodeURIComponent(r.link)+'">Salin</button> '
-       +'<a target="_blank" href="'+r.link+'"><button class="mini">Buka</button></a>';
+       +'<a target="_blank" href="'+r.link+'"><button class="mini">Buka</button></a> '
+       +'<button class="mini" data-d="'+(i)+'">📱 3 link + QR</button>';
     }else if(r.alive){
       t2='<span class="muted">valid tapi token gagal: '+((r.error||'')+'')+'</span>';
     }else{
@@ -382,8 +433,39 @@ function render(d){
       +'<td>'+dur+'</td>'
       +'<td class="muted">'+cookieTxt+'</td>';
     tb.appendChild(tr);
+    if(r.token&&r.links&&r.links.desktop){
+      const dtr=document.createElement('tr');dtr.className='detailrow';dtr.id='det'+i;dtr.style.display='none';
+      const L=r.links;
+      dtr.innerHTML='<td colspan="6"><div class="detailbox">'
+        +'<div class="dhead">🍿 Link Login Netflix Berhasil Dibuat</div>'
+        +'<div class="dsub">⏰ Token berlaku sampai: <b>'+(r.expires_str||'-')+'</b>'
+        +' &nbsp;·&nbsp; ⏱️ sisa: <b>'+(r.validity_str||'-')+'</b></div>'
+        +'<div class="dgrid">'
+          +'<div class="dcol"><div class="dlink"><b>🖥️ Desktop / Browser:</b><br>'
+            +'<a href="'+L.desktop+'" target="_blank">'+L.desktop+'</a></div>'
+            +'<button class="mini alt" data-c="'+encodeURIComponent(L.desktop)+'">Salin Desktop</button> '
+            +'<a target="_blank" href="'+L.desktop+'"><button class="mini">Buka Desktop</button></a></div>'
+          +'<div class="dcol"><div class="dlink"><b>📱 HP / Aplikasi Netflix:</b><br>'
+            +'<a href="'+L.mobile+'" target="_blank">'+L.mobile+'</a></div>'
+            +'<button class="mini alt" data-c="'+encodeURIComponent(L.mobile)+'">Salin HP</button> '
+            +'<a target="_blank" href="'+L.mobile+'"><button class="mini">Buka HP</button></a></div>'
+          +'<div class="dcol"><div class="dlink"><b>📺 Smart TV:</b><br>'
+            +'<a href="'+L.tv+'" target="_blank">'+L.tv+'</a></div>'
+            +'<button class="mini alt" data-c="'+encodeURIComponent(L.tv)+'">Salin TV</button> '
+            +'<a target="_blank" href="'+L.tv+'"><button class="mini">Buka TV</button></a></div>'
+        +'</div>'
+        +(r.qr?'<div class="qrbox"><img src="'+r.qr+'" alt="QR"><div class="muted">Scan pakai kamera HP → langsung masuk</div></div>':'')
+        +'<details><summary>📖 Panduan Penggunaan (klik)</summary><pre class="guide">'+(r.guide||'')+'</pre></details>'
+        +'<button class="mini alt" data-c="'+encodeURIComponent(r.guide||'')+'">Salin Panduan</button>'
+        +'</div></td>';
+      tb.appendChild(dtr);
+    }
   });
   tb.querySelectorAll('button[data-c]').forEach(b=>b.onclick=()=>copy(decodeURIComponent(b.dataset.c)));
+  tb.querySelectorAll('button[data-d]').forEach(b=>b.onclick=()=>{
+    const dr=document.getElementById('det'+b.dataset.d);
+    if(dr){dr.style.display=(dr.style.display==='none'||!dr.style.display)?'table-row':'none';}
+  });
   toast('Selesai: '+(s.tokens??0)+' token dari '+(s.alive??0)+' akun hidup');
 }
 async function generate(){

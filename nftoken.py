@@ -159,7 +159,95 @@ def extract_cookie_dict(text: str) -> dict:
 
 
 def build_nftoken_link(token: str) -> str:
-    return "https://netflix.com/?nftoken=" + token
+    """Link generik (default: desktop/browse)."""
+    return "https://www.netflix.com/browse?nftoken=" + token
+
+
+# Varian perangkat — 1 token, 3 cara masuk
+DEVICE_PATHS = {
+    "desktop": "browse",       # browser PC/laptop -> Netflix web
+    "mobile": "unsupported",   # HP (buka di Chrome/Safari HP -> masuk app/web)
+    "tv": "tv8",               # Smart TV (login via kode / sign-in from browser)
+}
+
+
+def build_device_links(token: str) -> dict:
+    """1 token -> dict {desktop, mobile, tv} berisi URL lengkap."""
+    return {k: f"https://www.netflix.com/{p}?nftoken={token}" for k, p in DEVICE_PATHS.items()}
+
+
+def make_qr_dataurl(text: str) -> str:
+    """QR code PNG -> data URL (base64), biar bisa langsung <img src=...>."""
+    try:
+        import qrcode
+        from io import BytesIO
+        import base64
+        img = qrcode.make(text)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return ""
+
+
+def make_qr_png(text: str) -> bytes | None:
+    """QR code PNG bytes (buat export file / ZIP)."""
+    try:
+        import qrcode
+        from io import BytesIO
+        img = qrcode.make(text)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def build_guide(links: dict, expires_str: str = "", validity_str: str = "") -> str:
+    """Panduan penggunaan — format sama kayak yang biasa dipakai bot Netflix."""
+    d = links.get("desktop", "")
+    m = links.get("mobile", "")
+    t = links.get("tv", "")
+    return f"""📖 PANDUAN PENGGUNAAN LINK NETFLIX
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⏰ Token berlaku sampai: {expires_str}
+⏱️ Sisa waktu: {validity_str or '-'}
+
+🖥️ Desktop / Browser:
+{d}
+
+📱 HP / Aplikasi:
+{m}
+
+📺 Smart TV:
+{t}
+
+1️⃣ PILIH PERANGKAT
+   • 🖥️ Desktop → buka link Desktop/Browser
+   • 📱 HP → buka link HP/Aplikasi
+   • 📺 Smart TV → buka link TV di browser HP/PC, lalu masukkan kode 8 digit dari TV
+
+2️⃣ CARA PAKAI DI HP (paling gampang)
+   • Copy link HP lalu buka di browser Chrome/Safari
+   • Akan langsung masuk ke akun Netflix tanpa password
+   • Kalau muncul permintaan login → buka link di mode incognito/private
+
+3️⃣ CARA PAKAI DI TV
+   • Buka aplikasi Netflix di TV
+   • Pilih Sign in → Sign in from browser
+   • Akan muncul kode 8 digit di layar TV
+   • Masukkan kode itu di link TV di atas
+
+4️⃣ QR CODE
+   • Scan QR yang dikirim bersama link pakai kamera HP
+   • Langsung masuk ke aplikasi Netflix
+
+⚠️ PENTING:
+• Link berlaku sesuai waktu yang tertera
+• Kalau link expired → generate ulang
+• Jangan logout — logout mematikan cookie, link nggak bisa dipakai lagi
+• 1 link = 1× pakai. Butuh login di device lain → generate link baru"""
 
 
 # ------------------------------------------------------------------ fetch
@@ -319,9 +407,14 @@ def process_cookie(raw_cookie: str, label: str = "", proxy: str | None = None,
             vsec = max(0, exp - time.time())
             vdays = round(vsec / 86400, 1)
             vstr = fmt_duration(vsec)
+        tok = gen.get("token")
+        dev_links = build_device_links(tok) if tok else {}
         res.update({
             "ok": True, "alive": True, "state": "ALIVE_WITH_TOKEN",
-            "token": gen.get("token"), "link": gen.get("link"),
+            "token": tok, "link": gen.get("link"),
+            "links": dev_links,
+            "qr": make_qr_dataurl(dev_links.get("mobile", gen.get("link", ""))) if tok else "",
+            "guide": build_guide(dev_links, gen.get("expires_str", ""), vstr) if tok else "",
             "expires": exp, "expires_str": gen.get("expires_str"),
             "validity_days": vdays, "validity_seconds": round(vsec, 1) if vsec is not None else None,
             "validity_str": vstr,
