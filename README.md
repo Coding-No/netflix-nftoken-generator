@@ -28,6 +28,8 @@ Buka link itu di browser → **langsung login** tanpa password.
 
 ## Fitur
 
+- ✅ **Alur 2 tahap otomatis**: cek valid → kalau hidup langsung generate token
+- ✅ **Tampil durasi**: per akun (waktu cek & generate) + total proses
 - ✅ **Bulk** — tempel/upload banyak akun sekaligus, jalan paralel (workers)
 - ✅ **Auto-detect** hidup/mati + alasan mati
 - ✅ **Dukung format**: Netscape (tab-separated), raw (`NetflixId=...; SecureNetflixId=...`), JSON
@@ -35,6 +37,23 @@ Buka link itu di browser → **langsung login** tanpa password.
 - ✅ **Export**: ZIP (1 file per akun + all_links.txt + links.tsv), TXT, CSV, JSON
 - ✅ **Web UI** (paste/upload) + **CLI** + **HTTP API**
 - ✅ **Proxy** opsional + timeout & concurrency yang bisa diatur
+
+### Alur 2 tahap (persis kayak yang diminta)
+
+```
+cookie masuk
+   ↓
+TAHAP 1: cek valid   → hit endpoint Netflix, cookie hidup/mati?   (≈0.3–0.5s)
+   ↓ (kalau hidup)
+TAHAP 2: generate    → createAutoLoginToken → link nftoken        (≈0.3–0.5s)
+   ↓
+HASIL: link + berlaku sampai + DURASI (per akun & total proses)
+```
+
+Tabel hasil punya kolom **"Tahap 1: Valid?"** → **"Tahap 2: Link NFToken"**,
+plus **"Berlaku sampai"** dan **"Durasi"** (mis. `29 hari 6 jam`).
+Di bawah tabel ada ringkasan: total proses, rata-rata cek, rata-rata generate,
+per akun, tercepat, terlama.
 
 ---
 
