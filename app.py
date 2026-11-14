@@ -97,12 +97,28 @@ def api_generate(inp: GenIn):
     if not items:
         return JSONResponse({"ok": False, "error": "Tidak ada cookie terdeteksi"}, status_code=400)
     t0 = time.time()
-    results = N.generate_bulk(items, workers=inp.workers, proxy=inp.proxy, timeout=inp.timeout)
-    alive = sum(1 for r in results if r.get("ok"))
-    summary = {"total": len(results), "alive": alive, "dead": len(results) - alive,
-               "elapsed": round(time.time() - t0, 2), "workers": inp.workers}
+    results = N.process_bulk(items, workers=inp.workers, proxy=inp.proxy, timeout=inp.timeout)
+    summary = _summarize(results, t0, inp.workers)
     _save_last(items, results, summary)
     return {"ok": True, "summary": summary, "results": results}
+
+
+def _summarize(results, t0, workers):
+    alive = sum(1 for r in results if r.get("alive"))
+    tok = sum(1 for r in results if r.get("ok") and r.get("token"))
+    dead = len(results) - alive
+    scan_times = [r.get("scan_elapsed") or 0 for r in results]
+    chk_times = [r.get("check_elapsed") or r.get("elapsed") or 0 for r in results if r.get("check_elapsed") or r.get("elapsed")]
+    gen_times = [r.get("gen_elapsed") or 0 for r in results if (r.get("gen_elapsed") or 0) > 0]
+    avg = lambda a: round(sum(a) / len(a), 2) if a else 0
+    return {
+        "total": len(results), "alive": alive, "dead": dead, "tokens": tok,
+        "elapsed": round(time.time() - t0, 2), "workers": workers,
+        "avg_check": avg(chk_times), "avg_gen": avg(gen_times),
+        "avg_scan": avg(scan_times),
+        "slowest": round(max(scan_times), 2) if scan_times else 0,
+        "fastest": round(min([t for t in scan_times if t > 0]), 2) if any(scan_times) else 0,
+    }
 
 
 @app.post("/api/generate/zip")
@@ -128,10 +144,8 @@ async def api_generate_zip(file: UploadFile = File(...), workers: int = Form(8),
     if not items:
         return JSONResponse({"ok": False, "error": "Tidak ada cookie Netflix di file"}, status_code=400)
     t0 = time.time()
-    results = N.generate_bulk(items, workers=workers, proxy=proxy or None, timeout=timeout)
-    alive = sum(1 for r in results if r.get("ok"))
-    summary = {"total": len(results), "alive": alive, "dead": len(results) - alive,
-               "elapsed": round(time.time() - t0, 2), "workers": workers}
+    results = N.process_bulk(items, workers=workers, proxy=proxy or None, timeout=timeout)
+    summary = _summarize(results, t0, workers)
     _save_last(items, results, summary)
     return {"ok": True, "summary": summary, "results": results}
 
@@ -152,10 +166,12 @@ def export(fmt: str = "json", only: str = "ALL"):
     if fmt == "csv":
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["label", "status", "ok", "token", "link", "expires_str", "error", "cookie_keys"])
+        w.writerow(["label", "status", "valid", "ok", "token", "link", "expires_str", "validity_days", "validity_str", "check_elapsed", "gen_elapsed", "error", "cookie_keys"])
         for r in rows:
-            w.writerow([r.get("label", ""), r.get("status", ""), r.get("ok"),
-                        r.get("token", ""), r.get("link", ""), r.get("expires_str", ""),
+            w.writerow([r.get("label", ""), r.get("status", ""), r.get("alive"),
+                        r.get("ok"), r.get("token", ""), r.get("link", ""),
+                        r.get("expires_str", ""), r.get("validity_days", ""), r.get("validity_str", ""),
+                        r.get("check_elapsed", ""), r.get("gen_elapsed", ""),
                         r.get("error", ""), ",".join(r.get("cookie_keys", []))])
         return PlainTextResponse(buf.getvalue(), media_type="text/csv",
                                  headers={"Content-Disposition": "attachment; filename=nftokens.csv"})
@@ -190,7 +206,16 @@ def export_zip(only: str = "ALIVE"):
             if not (r.get("ok") and r.get("link")):
                 continue
             label = (r.get("label") or f"item{i}").replace("/", "_")[:60]
-            z.writestr(f"{i:03d}_{label}.txt", r["link"] + "\n")
+            dur = r.get("validity_str") or (f"{r.get('validity_days')} hari" if r.get("validity_days") is not None else "-")
+            body = (f"LINK LOGIN NETFLIX (nftoken)\n"
+                    f"===========================\n"
+                    f"{r['link']}\n\n"
+                    f"Berlaku sampai : {r.get('expires_str') or '-'}\n"
+                    f"Durasi         : {dur}\n"
+                    f"Valid?         : {'YA' if r.get('alive') else 'TIDAK'}\n"
+                    f"Waktu cek      : {r.get('check_elapsed', '-')}s\n"
+                    f"Waktu generate : {r.get('gen_elapsed', '-')}s\n")
+            z.writestr(f"{i:03d}_{label}.txt", body)
             all_links.append(r["link"])
         z.writestr("all_links.txt", "\n".join(all_links) + ("\n" if all_links else ""))
         tsv = "\n".join(f'{r.get("label","")}\t{r["link"]}' for r in rows if r.get("ok") and r.get("link"))
@@ -278,6 +303,8 @@ details summary{cursor:pointer;color:var(--mut)}
         <span class="stat ok" id="s_alive">0</span> <span class="muted">hidup</span>
         &nbsp;·&nbsp;
         <span class="stat bad" id="s_dead">0</span> <span class="muted">mati</span>
+        &nbsp;·&nbsp;
+        <span class="stat ok" id="s_tok">0</span> <span class="muted">token jadi</span>
         &nbsp;·&nbsp; <span class="muted" id="s_meta"></span>
       </div>
       <div class="row">
@@ -287,13 +314,18 @@ details summary{cursor:pointer;color:var(--mut)}
         <a id="dl_json" href="/export?fmt=json&only=ALL"><button class="alt mini">⬇️ JSON</button></a>
       </div>
     </div>
+    <div class="row muted" id="s_timing" style="margin:8px 0;gap:16px"></div>
     <div class="bar" style="margin:12px 0"><i id="bar"></i></div>
     <div style="overflow:auto;max-height:60vh">
       <table id="tb"><thead><tr>
-        <th>#</th><th>Status</th><th>Link NFToken</th><th>Expires</th><th>Cookie</th>
+        <th>#</th><th>Tahap 1: Valid?</th><th>Tahap 2: Link NFToken</th>
+        <th>Berlaku sampai</th><th>Durasi</th><th>Cookie</th>
       </tr></thead><tbody></tbody></table>
     </div>
-    <div class="muted" style="margin-top:8px">Klik "Salin" buat ambil link. Link = login otomatis, buka di browser (incognito kalau mau akun terpisah).</div>
+    <div class="muted" style="margin-top:8px">
+      Alur otomatis: <b>cek valid</b> → kalau valid <b>langsung generate token</b> → tampil <b>durasinya</b>.
+      Klik "Salin" buat ambil link. Link = login otomatis (buka di incognito kalau mau akun terpisah).
+    </div>
   </div>
 
   <div class="card muted">
@@ -310,32 +342,49 @@ function copy(t){navigator.clipboard.writeText(t).then(()=>toast('Disalin ✓'))
 function render(d){
   const rows=d.results||[];const s=d.summary||{};
   $('#rescard').style.display='block';
-  $('#s_alive').textContent=s.alive??rows.filter(r=>r.ok).length;
-  $('#s_dead').textContent=s.dead??rows.filter(r=>!r.ok).length;
+  $('#s_alive').textContent=s.alive??rows.filter(r=>r.alive).length;
+  $('#s_dead').textContent=s.dead??rows.filter(r=>!r.alive).length;
+  $('#s_tok').textContent=s.tokens??rows.filter(r=>r.token).length;
   $('#s_meta').textContent=(s.total||rows.length)+' total · '+(s.elapsed||'?')+'s · '+(s.workers||8)+' workers';
+  if(s.avg_check!==undefined){
+    $('#s_timing').innerHTML=
+      '⏱️ total proses: <b>'+(s.elapsed||0)+'s</b>'+
+      ' · rata-rata cek valid: <b>'+(s.avg_check||0)+'s</b>'+
+      ' · rata-rata generate token: <b>'+(s.avg_gen||0)+'s</b>'+
+      ' · per akun: <b>'+(s.avg_scan||0)+'s</b>'+
+      ' · tercepat: <b>'+(s.fastest||0)+'s</b> · terlama: <b>'+(s.slowest||0)+'s</b>';
+  }
   $('#bar').style.width='100%';
   const tb=$('#tb tbody');tb.innerHTML='';
   rows.forEach((r,i)=>{
     const tr=document.createElement('tr');
-    if(r.ok){
-      tr.innerHTML='<td>'+(i+1)+'</td>'
-       +'<td><span class="pill ok">HIDUP</span></td>'
-       +'<td><a class="link" href="'+r.link+'" target="_blank">'+r.link.slice(0,90)+'…</a> '
+    const t1=r.state||''; 
+    const validPill = r.alive ? '<span class="pill ok">VALID</span>'
+                              : '<span class="pill bad">MATI</span>';
+    let dur='-', exp=r.expires_str||'-';
+    if(r.validity_str){dur='<b>'+r.validity_str+'</b>';}
+    else if(r.validity_days!==undefined && r.validity_days!==null){dur='<b>'+r.validity_days+' hari</b>';}
+    let t2;
+    if(r.token&&r.link){
+      t2='<a class="link" href="'+r.link+'" target="_blank">'+r.link.slice(0,70)+'…</a> '
        +'<button class="mini alt" data-c="'+encodeURIComponent(r.link)+'">Salin</button> '
-       +'<a target="_blank" href="'+r.link+'"><button class="mini">Buka</button></a></td>'
-       +'<td class="mono">'+(r.expires_str||'')+'</td>'
-       +'<td class="muted">'+((r.cookie_keys||[]).join(', '))+'</td>';
+       +'<a target="_blank" href="'+r.link+'"><button class="mini">Buka</button></a>';
+    }else if(r.alive){
+      t2='<span class="muted">valid tapi token gagal: '+((r.error||'')+'')+'</span>';
     }else{
-      tr.innerHTML='<td>'+(i+1)+'</td>'
-       +'<td><span class="pill bad">MATI</span></td>'
-       +'<td class="muted">'+((r.error||'gagal')+' — '+(r.label||''))+'</td>'
-       +'<td class="muted">HTTP '+(r.status??'-')+'</td>'
-       +'<td class="muted">'+((r.cookie_keys||[]).join(', ')||'-')+'</td>';
+      t2='<span class="muted">'+((r.error||'cookie mati'))+'</span>';
     }
+    const cookieTxt=(r.cookie_keys||[]).join(', ')||'-';
+    tr.innerHTML='<td>'+(i+1)+'</td>'
+      +'<td>'+validPill+((r.check_elapsed)?' <span class="muted">'+(r.check_elapsed)+'s</span>':'')+'</td>'
+      +'<td>'+t2+'</td>'
+      +'<td class="mono">'+exp+'</td>'
+      +'<td>'+dur+'</td>'
+      +'<td class="muted">'+cookieTxt+'</td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll('button[data-c]').forEach(b=>b.onclick=()=>copy(decodeURIComponent(b.dataset.c)));
-  toast('Selesai: '+(s.alive??0)+' hidup dari '+(s.total??rows.length));
+  toast('Selesai: '+(s.tokens??0)+' token dari '+(s.alive??0)+' akun hidup');
 }
 async function generate(){
   const text=$('#in').value.trim();

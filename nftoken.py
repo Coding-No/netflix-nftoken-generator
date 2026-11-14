@@ -215,6 +215,23 @@ def fetch_nftoken(cookie_dict: dict, timeout: int = 30, proxy: str | None = None
     return {"ok": False, "error": last or "unknown error", "status": 0}
 
 
+def fmt_duration(seconds) -> str:
+    """Detik -> 'X hari Y jam' / 'Y jam Z mnt' / 'Z mnt W dtk' / 'W detik'."""
+    if seconds is None:
+        return "-"
+    s = int(max(0, seconds))
+    d, rem = divmod(s, 86400)
+    h, rem = divmod(rem, 3600)
+    m, sec = divmod(rem, 60)
+    if d > 0:
+        return f"{d} hari {h} jam"
+    if h > 0:
+        return f"{h} jam {m} mnt"
+    if m > 0:
+        return f"{m} mnt {sec} dtk"
+    return f"{sec} detik"
+
+
 def fmt_expiry(expires) -> str:
     if not isinstance(expires, (int, float)):
         return "Unknown"
@@ -236,6 +253,116 @@ def generate(raw_cookie: str, label: str = "", proxy: str | None = None,
     res["cookie_keys"] = sorted(ck.keys())
     res["ts"] = int(time.time())
     return res
+
+
+def check_cookie(raw_cookie: str, label: str = "", proxy: str | None = None,
+                 timeout: int = 30) -> dict:
+    """FASE 1 — cek cookie hidup/mati (+ info akun kalau bisa)."""
+    t0 = time.time()
+    ck = extract_cookie_dict(raw_cookie)
+    if not ck:
+        return {"ok": False, "phase": "check", "label": label, "state": "INVALID_INPUT",
+                "error": "No valid cookie found", "status": 0,
+                "elapsed": round(time.time() - t0, 2), "cookie_keys": []}
+    if not ck.get(REQUIRED_COOKIE):
+        return {"ok": False, "phase": "check", "label": label, "state": "NO_NETFLIXID",
+                "error": "Missing NetflixId", "status": 0,
+                "elapsed": round(time.time() - t0, 2), "cookie_keys": sorted(ck.keys())}
+    r = fetch_nftoken(ck, timeout=timeout, proxy=proxy, retries=1)
+    alive = bool(r.get("ok"))
+    out = {
+        "ok": alive,
+        "phase": "check",
+        "label": label or ck.get("NetflixId", "")[:16],
+        "state": "VALID" if alive else "INVALID",
+        "status": r.get("status", 0),
+        "error": r.get("error", ""),
+        "elapsed": round(time.time() - t0, 2),
+        "cookie_keys": sorted(ck.keys()),
+        "ts": int(time.time()),
+    }
+    return out
+
+
+def process_cookie(raw_cookie: str, label: str = "", proxy: str | None = None,
+                   timeout: int = 30) -> dict:
+    """2 FASE dalam 1 panggilan:
+       FASE 1 cek valid -> kalau VALID, FASE 2 otomatis generate token.
+       Menyertakan durasi tiap fase + total.
+    """
+    t_all = time.time()
+    chk = check_cookie(raw_cookie, label=label, proxy=proxy, timeout=timeout)
+    res = dict(chk)
+    res["check_elapsed"] = chk.get("elapsed", 0)
+
+    if not chk.get("ok"):
+        res.update({
+            "token": None, "link": None, "expires": None, "expires_str": None,
+            "validity_days": None, "alive": False,
+            "scan_elapsed": round(time.time() - t_all, 2),
+            "gen_elapsed": 0.0,
+        })
+        return res
+
+    # FASE 2 — generate token (pakai cookie yg sama)
+    t_gen = time.time()
+    ck = extract_cookie_dict(raw_cookie)
+    gen = fetch_nftoken(ck, timeout=timeout, proxy=proxy)
+    gen_elapsed = round(time.time() - t_gen, 2)
+
+    if gen.get("ok"):
+        exp = gen.get("expires")
+        vdays = None
+        vsec = None
+        vstr = None
+        if isinstance(exp, (int, float)):
+            vsec = max(0, exp - time.time())
+            vdays = round(vsec / 86400, 1)
+            vstr = fmt_duration(vsec)
+        res.update({
+            "ok": True, "alive": True, "state": "ALIVE_WITH_TOKEN",
+            "token": gen.get("token"), "link": gen.get("link"),
+            "expires": exp, "expires_str": gen.get("expires_str"),
+            "validity_days": vdays, "validity_seconds": round(vsec, 1) if vsec is not None else None,
+            "validity_str": vstr,
+            "gen_elapsed": gen_elapsed,
+            "scan_elapsed": round(time.time() - t_all, 2),
+        })
+    else:
+        res.update({
+            "ok": False, "alive": True, "state": "ALIVE_NO_TOKEN",
+            "token": None, "link": None, "expires": None, "expires_str": None,
+            "validity_days": None, "error": gen.get("error", ""),
+            "gen_elapsed": gen_elapsed,
+            "scan_elapsed": round(time.time() - t_all, 2),
+        })
+    return res
+
+
+def process_bulk(items: list[dict], workers: int = 8, proxy: str | None = None,
+                 timeout: int = 30, progress=None) -> list[dict]:
+    """Bulk 2 fase: validasi + generate token. items: [{'label','raw'}]."""
+    out: list[dict | None] = [None] * len(items)
+    done = {"n": 0}
+
+    def work(i, it):
+        return i, process_cookie(it.get("raw", ""), it.get("label", ""), proxy=proxy, timeout=timeout)
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        futs = [ex.submit(work, i, it) for i, it in enumerate(items)]
+        for f in as_completed(futs):
+            try:
+                i, res = f.result()
+                out[i] = res
+            except Exception:
+                pass
+            done["n"] += 1
+            if progress:
+                try:
+                    progress(done["n"], len(items))
+                except Exception:
+                    pass
+    return [r or {"ok": False, "error": "worker crashed", "state": "ERROR"} for r in out]
 
 
 def generate_bulk(items: list[dict], workers: int = 8, proxy: str | None = None,
