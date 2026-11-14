@@ -54,9 +54,14 @@ def _split_items(text: str) -> list[dict]:
         raw_items = [b.strip() for b in text.split("\n----") if b.strip()]
     out = []
     for i, blk in enumerate(raw_items):
-        # label dari NetflixId yang kebaca (dipotong) kalau ada
         ck = N.extract_cookie_dict(blk)
-        label = (ck.get("NetflixId", "")[:18] or f"item{i+1}")
+        # label: prioritas email akun -> nama profil -> generik
+        label = ""
+        for k in ("email", "account_email", "loginEmail", "userEmail", "emailAddress"):
+            if ck.get(k):
+                label = str(ck[k]).strip(); break
+        if not label:
+            label = f"akun-{i+1}"
         out.append({"label": label, "raw": blk})
     return out
 
@@ -137,7 +142,15 @@ async def api_generate_zip(file: UploadFile = File(...), workers: int = Form(8),
                     continue
                 if "NetflixId" not in body:
                     continue
-                items.extend(_split_items(body))
+                fname_label = os.path.basename(name).rsplit(".", 1)[0] or name
+                chunk = _split_items(body)
+                for j, it in enumerate(chunk, 1):
+                    # label = nama file (lebih enak dibaca dari akun-N)
+                    if len(chunk) > 1:
+                        it["label"] = f"{fname_label}#{j}"
+                    else:
+                        it["label"] = fname_label
+                items.extend(chunk)
     else:
         items = _split_items(raw.decode("utf-8", "ignore"))
 
@@ -482,14 +495,18 @@ async function generate(){
 }
 async function genFile(){
   const f=$('#file').files[0];if(!f){toast('Pilih file dulu');return;}
-  $('#upgo').disabled=true;$('#bar').style.width='25%';
+  $('#upgo').disabled=true;$('#msg').textContent='Membaca '+f.name+'…';
+  $('#bar').style.width='30%';
   try{
     const fd=new FormData();fd.append('file',f);fd.append('workers',$('#wk').value||'8');
     fd.append('proxy',$('#px').value.trim());fd.append('timeout',$('#to').value||'30');
+    $('#msg').textContent='Memproses '+(f.size/1024).toFixed(0)+' KB…';$('#bar').style.width='60%';
     const r=await fetch('/api/generate/zip',{method:'POST',body:fd});
     const d=await r.json();
-    if(!d.ok)toast(d.error||'Gagal');else render(d);
-  }catch(e){toast('Error: '+e);}finally{$('#upgo').disabled=false;}
+    if(!d.ok){toast(d.error||'Gagal');$('#msg').textContent=d.error||'';$('#bar').style.width='0';}
+    else{$('#bar').style.width='100%';$('#msg').textContent='Selesai ✓ '+(d.summary?d.summary.total:0)+' akun';render(d);}
+  }catch(e){toast('Error: '+e);$('#msg').textContent='Error: '+e;$('#bar').style.width='0';}
+  finally{$('#upgo').disabled=false;setTimeout(()=>{$('#bar').style.width='0';},2500);}
 }
 $('#go').onclick=generate;$('#upgo').onclick=genFile;$('#clr').onclick=()=>{$('#in').value='';};
 // muat hasil terakhir kalau ada
